@@ -7,7 +7,7 @@ Browser-only EVE Online asset tracker for your characters and corporations. It r
 - Corporation assets appear automatically for any logged-in character with the **Director** role, labelled by your corp's **hangar division names**.
 - Resolves stations, Upwell structures (where the character has docking access), ship and container names, and fitted, cargo and drone-bay contents.
 - Values each stack at **Jita sell**, **Jita buy** (Fuzzwork market data) or **ESI average** prices. Blueprint copies count as 0.
-- Group by location, by item type, or flat. Search, location and division filters, sortable columns.
+- Filter by **region → constellation → solar system → station/structure**. Each list narrows to the one above it and shows the ISK in each place. Group by station/structure, **solar system** (with security status) or **region**, by item type, or flat. Search, location and division filters, sortable columns.
 - **Export CSV** of whatever is currently filtered.
 - Cached snapshots load instantly. A single **refresh countdown** on the Refresh button tracks the owner whose ESI asset cache (up to 1 hour) expires last. When it reaches zero, Refresh pulls every character and corp together. If it has already expired when you open the page, everything refreshes automatically.
 - **Sort locations** by most ISK, least ISK, stack count or name. Each location shows its share of the total value.

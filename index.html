@@ -46,11 +46,17 @@
       <section id="stats" class="stats"></section>
       <section class="filters">
         <input id="search" type="search" placeholder="Search items, ship or container names, locations…" autocomplete="off">
-        <select id="locationFilter"></select>
-        <select id="divisionFilter" hidden></select>
+        <select id="regionFilter" title="Region"></select>
+        <select id="constellationFilter" title="Constellation"></select>
+        <select id="systemFilter" title="Solar system"></select>
+        <select id="locationFilter" title="Station or structure"></select>
+        <select id="divisionFilter" title="Corp hangar division" hidden></select>
+        <button id="clearFilters" title="Clear search and all filters">Clear</button>
         <label class="field">Group
           <select id="groupBy">
-            <option value="location">By location</option>
+            <option value="location">By station / structure</option>
+            <option value="system">By solar system</option>
+            <option value="region">By region</option>
             <option value="type">By item type</option>
             <option value="none">No grouping</option>
           </select>

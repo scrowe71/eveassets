@@ -99,12 +99,15 @@ export function buildRows(snapshot, ctx) {
   return rows;
 }
 
-export function filterRows(rows, { q = '', location = '', division = '' } = {}) {
+export function filterRows(rows, { q = '', location = '', division = '', region = '', constellation = '', system = '' } = {}) {
   const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
   return rows.filter(r =>
+    (!region || String(r.regionId) === region) &&
+    (!constellation || String(r.constellationId) === constellation) &&
+    (!system || String(r.systemId) === system) &&
     (!location || String(r.locationId) === location) &&
     (!division || r.division === division) &&
-    terms.every(t => r.search.includes(t) || r.location.toLowerCase().includes(t)));
+    terms.every(t => r.search.includes(t) || r.location.toLowerCase().includes(t) || (r.geoSearch || '').includes(t)));
 }
 
 export function sortRows(rows, { key = 'value', dir = -1 } = {}) {
@@ -128,6 +131,26 @@ export function groupByLocation(rows) {
     g.value += r.value;
   }
   return [...groups.values()].sort((a, b) => b.value - a.value);
+}
+
+/** Group rows by any id/name pair, e.g. ('systemId', 'system'). */
+export function groupByKey(rows, idKey, nameKey) {
+  const groups = new Map();
+  for (const r of rows) {
+    const id = r[idKey];
+    let g = groups.get(id);
+    if (!g) groups.set(id, g = { id, name: r[nameKey], first: r, rows: [], value: 0 });
+    g.rows.push(r);
+    g.value += r.value;
+  }
+  return [...groups.values()].sort((a, b) => b.value - a.value);
+}
+
+/** EVE's displayed security: rounded to 1 decimal, but anything just above 0.0 shows as 0.1. */
+export function displaySec(sec) {
+  if (sec == null) return '';
+  if (sec > 0 && sec < 0.05) return '0.1';
+  return (Math.round(sec * 10) / 10).toFixed(1);
 }
 
 export function groupByType(rows) {

@@ -1,10 +1,10 @@
 import {
-  buildRows, rootLocations, filterRows, sortRows, groupByLocation, groupByType,
+  buildRows, rootLocations, filterRows, groupByKey, displaySec, sortRows, groupByLocation, groupByType,
   toCsv, formatIsk, formatNum, timeAgo, OFFICE_TYPE_ID,
 } from './lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '1.2.0';   // bump on every release
+export const APP_VERSION = '1.3.0';   // bump on every release
 const CFG = window.EVEASSETS_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -63,14 +63,15 @@ const state = {
   snapshots: {},                          // ownerKey -> snapshot
   errors: {},                             // ownerKey -> message
   busy: null,                             // status text while working
-  q: '', location: '', division: '',
+  q: '', location: '', division: '', region: '', constellation: '', system: '',
   sort: { key: 'value', dir: -1 },
   expanded: new Set(), showAll: new Set(), flatLimit: 500,
   rows: [],
   jitaFailed: false,
 };
 const names = ls.get('ea.names', {});      // id -> name (types, stations, systems, corps) or null if invalid
-const structs = ls.get('ea.structs', {});  // structureId -> { ok, name, ts }
+const structs = ls.get('ea.structs', {});
+const geo = Object.assign({ loc: {}, sys: {}, con: {} }, ls.get('ea.geo', {}));   // station→system, system→{c,sec}, constellation→region  // structureId -> { ok, name, ts }
 const prices = { avg: {}, jita: {} };
 
 const saveChars = () => ls.set('ea.chars', state.chars);
@@ -237,17 +238,81 @@ async function resolveStructures(ids, charId) {
   const now = Date.now();
   const need = [...new Set(ids)].filter(id => {
     const s = structs[id];
-    return !s || (!s.ok && now - s.ts > 24 * 3600e3) || (s.ok && now - s.ts > 7 * 24 * 3600e3);
+    return !s || (!s.ok && now - s.ts > 24 * 3600e3) || (s.ok && (!s.systemId || now - s.ts > 7 * 24 * 3600e3));
   });
   await pool(need, 3, async id => {
     try {
       const { data } = await esi(`/universe/structures/${id}`, { charId });
-      structs[id] = { ok: true, name: data.name, ts: now };
+      structs[id] = { ok: true, name: data.name, systemId: data.solar_system_id, ts: now };
     } catch (e) {
-      structs[id] = { ok: false, ts: now, status: e.status };
+      // Keep a name we already know; only mark it inaccessible if we never had one.
+      if (structs[id]?.ok) structs[id].ts = now - 6 * 24 * 3600e3;   // retry in about a day
+      else structs[id] = { ok: false, ts: now, status: e.status };
     }
   });
   ls.set('ea.structs', structs);
+}
+
+// ---------------------------------------------------------------- geography (all public ESI, cached for good)
+function systemOf(locId) {
+  if (locId >= 30000000 && locId < 33000000) return locId;          // item sitting in space
+  if (structs[locId]?.systemId) return structs[locId].systemId;     // Upwell structure
+  return geo.loc[locId] || null;                                     // NPC station
+}
+
+async function resolveGeo(roots) {
+  const stations = [...new Set(roots)].filter(id => id >= 60000000 && id < 64000000 && !(id in geo.loc));
+  await pool(stations, 8, async id => {
+    try { geo.loc[id] = (await esi(`/universe/stations/${id}`)).data.system_id; } catch { geo.loc[id] = null; }
+  });
+  const systems = [...new Set(roots.map(systemOf).filter(Boolean))];
+  await pool(systems.filter(id => !(id in geo.sys)), 8, async id => {
+    try {
+      const { data } = await esi(`/universe/systems/${id}`);
+      geo.sys[id] = { c: data.constellation_id, sec: data.security_status };
+      names[id] = data.name;
+    } catch { geo.sys[id] = null; }
+  });
+  const cons = [...new Set(systems.map(id => geo.sys[id]?.c).filter(Boolean))];
+  await pool(cons.filter(id => !(id in geo.con)), 8, async id => {
+    try {
+      const { data } = await esi(`/universe/constellations/${id}`);
+      geo.con[id] = data.region_id;
+      names[id] = data.name;
+    } catch { geo.con[id] = null; }
+  });
+  await resolveNames(cons.map(id => geo.con[id]).filter(Boolean));
+  ls.set('ea.geo', geo);
+  saveNamesSoon();
+}
+
+function geoOf(locId) {
+  const sys = systemOf(locId);
+  const g = sys ? geo.sys[sys] : null;
+  const con = g?.c || 0;
+  const reg = con ? geo.con[con] || 0 : 0;
+  const sec = displaySec(g?.sec);
+  return {
+    systemId: sys || 0,
+    system: sys ? `${names[sys] || `System ${sys}`}${sec ? ` (${sec})` : ''}` : 'Unknown system',
+    constellationId: con,
+    constellation: con ? names[con] || `Constellation ${con}` : 'Unknown constellation',
+    regionId: reg,
+    region: reg ? names[reg] || `Region ${reg}` : 'Unknown region',
+  };
+}
+
+// Fill in systems/regions for snapshots cached before this feature existed.
+async function enrichGeo() {
+  for (const o of owners()) {
+    const snap = state.snapshots[o.key];
+    if (!snap) continue;
+    const roots = rootLocations(snap.assets);
+    try {
+      if (!state.chars[o.viaChar]?.needsLogin) await resolveStructures(roots.filter(id => id >= 1e12), o.viaChar);
+      await resolveGeo(roots);
+    } catch (e) { console.warn('geo lookup failed', e); }
+  }
 }
 
 const typeName = id => names[id] || `Type ${id}`;
@@ -358,6 +423,7 @@ async function fetchOwner(o) {
   const roots = rootLocations(assets);
   await resolveNames([...assets.map(a => a.type_id), ...roots]);
   await resolveStructures(roots.filter(id => id >= 1e12), o.viaChar);
+  await resolveGeo(roots);
 
   const now = Date.now();
   const expiresAt = expires && expires > now ? expires : now + STALE_MS;
@@ -441,11 +507,21 @@ function rebuild() {
   state.rows = owners()
     .filter(o => !state.disabled[o.key] && state.snapshots[o.key])
     .flatMap(o => buildRows({ ...state.snapshots[o.key], ownerName: o.name }, ctx));
+  const cache = new Map();
+  for (const r of state.rows) {
+    let g = cache.get(r.locationId);
+    if (!g) {
+      g = geoOf(r.locationId);
+      g.geoSearch = `${g.system} ${g.constellation} ${g.region}`.toLowerCase();
+      cache.set(r.locationId, g);
+    }
+    Object.assign(r, g);
+  }
   render();
 }
 
 function filtered() {
-  return filterRows(state.rows, { q: state.q, location: state.location, division: state.division });
+  return filterRows(state.rows, { q: state.q, location: state.location, division: state.division, region: state.region, constellation: state.constellation, system: state.system });
 }
 
 // ---------------------------------------------------------------- render
@@ -533,18 +609,28 @@ function renderStats(rows) {
     ? '<div class="banner small">Some Jita prices could not be loaded, so those items use ESI average prices.</div>' : '';
 }
 
+function options(sel, all, rows, idKey, nameKey, current) {
+  const groups = groupByKey(rows, idKey, nameKey).sort((a, b) => a.name.localeCompare(b.name));
+  sel.innerHTML = `<option value="">${all}</option>` +
+    groups.map(g => `<option value="${g.id}" ${String(g.id) === current ? 'selected' : ''}>${esc(g.name)} (${formatIsk(g.value)})</option>`).join('');
+}
+
 function renderFilterOptions() {
-  const locs = groupByLocation(state.rows);
-  const sel = $('#locationFilter');
-  sel.innerHTML = '<option value="">All locations</option>' +
-    locs.map(g => `<option value="${g.id}" ${String(g.id) === state.location ? 'selected' : ''}>${esc(g.name)} (${formatIsk(g.value)})</option>`).join('');
+  // Each level only offers choices inside the level above it.
+  const inRegion = state.region ? state.rows.filter(r => String(r.regionId) === state.region) : state.rows;
+  const inCon = state.constellation ? inRegion.filter(r => String(r.constellationId) === state.constellation) : inRegion;
+  const inSys = state.system ? inCon.filter(r => String(r.systemId) === state.system) : inCon;
+  options($('#regionFilter'), 'All regions', state.rows, 'regionId', 'region', state.region);
+  options($('#constellationFilter'), 'All constellations', inRegion, 'constellationId', 'constellation', state.constellation);
+  options($('#systemFilter'), 'All systems', inCon, 'systemId', 'system', state.system);
+  options($('#locationFilter'), 'All stations & structures', inSys, 'locationId', 'location', state.location);
   const divs = [...new Set(state.rows.map(r => r.division).filter(Boolean))].sort();
   $('#divisionFilter').innerHTML = '<option value="">All divisions</option>' +
     divs.map(d => `<option ${d === state.division ? 'selected' : ''}>${esc(d)}</option>`).join('');
   $('#divisionFilter').hidden = !divs.length;
   $('#groupBy').value = state.groupBy;
   $('#locSort').value = state.locSort;
-  $('#locSortField').hidden = state.groupBy !== 'location';
+  $('#locSortField').hidden = !['location', 'system', 'region'].includes(state.groupBy);
   $('#priceMode').value = state.priceMode;
 }
 
@@ -612,20 +698,23 @@ function renderContent(rows) {
   }
 
   const total = rows.reduce((s, r) => s + r.value, 0);
-  const groups = sortGroups(groupByLocation(rows));
-  const autoOpen = !!(state.q || state.location) || groups.length === 1;
+  const [idKey, nameKey] = { system: ['systemId', 'system'], region: ['regionId', 'region'] }[state.groupBy] || ['locationId', 'location'];
+  const showLoc = state.groupBy !== 'location';
+  const groups = sortGroups(groupByKey(rows, idKey, nameKey));
+  const autoOpen = !!(state.q || state.location || state.system) || groups.length === 1;
   el.innerHTML = groups.map(g => {
     const open = autoOpen || state.expanded.has(g.id);
     let body = '';
     if (open) {
       const sorted = sortRows(g.rows, state.sort);
       const shown = state.showAll.has(g.id) ? sorted : sorted.slice(0, ROW_CAP);
-      body = `<table>${head(false)}<tbody>${shown.map(r => rowHtml(r, false)).join('')}</tbody></table>
+      body = `<table>${head(showLoc)}<tbody>${shown.map(r => rowHtml(r, showLoc)).join('')}</tbody></table>
         ${sorted.length > shown.length ? `<button class="more" data-showall="${g.id}">Show all ${formatNum(sorted.length)} stacks</button>` : ''}`;
     }
     return `<section class="group ${open ? 'open' : ''}">
       <button class="group-head" data-loc="${g.id}"><span class="caret">${open ? '▾' : '▸'}</span>
-        <span class="gname">${esc(g.name)}</span><span class="share" title="Share of the total value shown">${total ? `${(g.value / total * 100).toFixed(1)}%` : ''}</span><span class="dim">${formatNum(g.rows.length)} ${g.rows.length === 1 ? 'stack' : 'stacks'}</span><b>${formatIsk(g.value)} ISK</b></button>
+        <span class="gname">${esc(g.name)}<small>${esc(
+          state.groupBy === 'location' ? `${g.first.system} · ${g.first.region}` : state.groupBy === 'system' ? `${g.first.constellation} · ${g.first.region}` : '')}</small></span><span class="share" title="Share of the total value shown">${total ? `${(g.value / total * 100).toFixed(1)}%` : ''}</span><span class="dim">${formatNum(g.rows.length)} ${g.rows.length === 1 ? 'stack' : 'stacks'}</span><b>${formatIsk(g.value)} ISK</b></button>
       ${body}</section>`;
   }).join('');
 }
@@ -636,7 +725,15 @@ function bindUi() {
   $('#refreshBtn').addEventListener('click', () => { if (Date.now() >= refreshAt()) refresh(activeOwners()); });
   let t;
   $('#search').addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => { state.q = e.target.value.trim(); state.flatLimit = 500; render(); }, 200); });
+  $('#regionFilter').addEventListener('change', e => { state.region = e.target.value; state.constellation = state.system = state.location = ''; render(); });
+  $('#constellationFilter').addEventListener('change', e => { state.constellation = e.target.value; state.system = state.location = ''; render(); });
+  $('#systemFilter').addEventListener('change', e => { state.system = e.target.value; state.location = ''; render(); });
   $('#locationFilter').addEventListener('change', e => { state.location = e.target.value; render(); });
+  $('#clearFilters').addEventListener('click', () => {
+    Object.assign(state, { q: '', region: '', constellation: '', system: '', location: '', division: '' });
+    $('#search').value = '';
+    render();
+  });
   $('#divisionFilter').addEventListener('change', e => { state.division = e.target.value; render(); });
   $('#locSort').addEventListener('change', e => { state.locSort = e.target.value; ls.set('ea.locSort', state.locSort); render(); });
   $('#groupBy').addEventListener('change', e => { state.groupBy = e.target.value; ls.set('ea.groupBy', state.groupBy); state.flatLimit = 500; render(); });
@@ -706,6 +803,7 @@ async function init() {
   prices.avg = ls.get('ea.prices', { avg: {} }).avg;
   prices.jita = ls.get('ea.jita', { map: {} }).map;
   rebuild();
+  enrichGeo().then(rebuild);
 
   const p = new URLSearchParams(location.search);
   if (p.has('code') || p.has('error')) {
