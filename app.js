@@ -4,7 +4,7 @@ import {
 } from './lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '1.3.0';   // bump on every release
+export const APP_VERSION = '1.4.0';   // bump on every release
 const CFG = window.EVEASSETS_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -581,6 +581,10 @@ function renderOwners() {
   $('#owners').innerHTML = `<h3>Characters</h3>${chars.map(ownerHtml).join('')}` +
     (corps.length ? `<h3>Corporations</h3>${corps.map(ownerHtml).join('')}` : '');
   $('#ownerSort').value = state.ownerSort;
+  const off = list.filter(o => state.disabled[o.key]).length;
+  const all = $('#toggleAll');
+  all.checked = off === 0;
+  all.indeterminate = off > 0 && off < list.length;
   updateTimers();
 }
 
@@ -753,6 +757,12 @@ function bindUi() {
   });
 
   $('#ownerSort').addEventListener('change', e => { state.ownerSort = e.target.value; ls.set('ea.ownerSort', state.ownerSort); renderOwners(); });
+  $('#toggleAll').addEventListener('change', e => {
+    if (e.target.checked) state.disabled = {};
+    else for (const o of owners()) state.disabled[o.key] = true;
+    ls.set('ea.disabled', state.disabled);
+    rebuild();
+  });
   $('#owners').addEventListener('change', e => {
     const key = e.target.dataset.owner;
     if (!key) return;
