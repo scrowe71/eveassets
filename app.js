@@ -4,6 +4,7 @@ import {
 } from './lib.js';
 
 // ---------------------------------------------------------------- config
+export const APP_VERSION = '1.0.0';   // bump on every release
 const CFG = window.EVEASSETS_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -668,6 +669,7 @@ function bindUi() {
 
 // ---------------------------------------------------------------- start
 async function init() {
+  $('#version').textContent = `v${APP_VERSION}`;
   bindUi();
   try {
     for (const s of (await idb.all()) || []) state.snapshots[s.ownerKey] = s;
