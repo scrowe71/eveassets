@@ -22,7 +22,7 @@ Browser-only EVE Online asset tracker for your characters and corporations. It r
    - `esi-universe.read_structures.v1`
    - `esi-corporations.read_divisions.v1`
    - `esi-characters.read_corporation_roles.v1`
-4. Callback URL: your site root **with the trailing slash**, e.g. `https://eve-assets.pages.dev/`
+4. Callback URL: your site root **with the trailing slash**, `https://eveassets.crankyape.space/`
 5. Copy the **Client ID** into `config.js`. The secret key is not used, so never put it in this repo.
 
 ### 2. Deploy on Cloudflare Pages
@@ -31,7 +31,7 @@ Cloudflare dashboard → Workers & Pages → Create → Pages → Connect to Git
 - Build command: *(leave empty)*
 - Build output directory: `/`
 
-Using a custom domain (e.g. `assets.crankyape.space`)? Add it in Pages, then change the EVE app's Callback URL to match, or set `redirectUri` in `config.js`.
+Live address: **https://eveassets.crankyape.space/**. Add it under the Pages project's **Custom domains** tab so Cloudflare issues the certificate and routes it. Logging in from the `*.pages.dev` address won't work unless that address is also registered as a callback.
 
 ### 3. Local testing (optional)
 ```powershell
