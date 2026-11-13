@@ -2,7 +2,7 @@
 // PKCE login means there is no secret key anywhere in this app.
 window.EVEASSETS_CONFIG = {
   // From https://developers.eveonline.com/applications, your EveAssets application.
-  clientId: 'PASTE_CLIENT_ID_HERE',
+  clientId: '25a257a333b64aa0814dd3f54e1ca257',
 
   // Must exactly match the Callback URL registered with CCP.
   // Leave null to use this site's root, e.g. https://eve-assets.pages.dev/
