@@ -396,7 +396,9 @@ const nextUpdate = o => {
   if (!snap) return 0;
   return snap.expiresAt || snap.fetchedAt + STALE_MS;
 };
-const readyOwners = () => owners().filter(o => !state.chars[o.viaChar]?.needsLogin && Date.now() >= nextUpdate(o));
+const activeOwners = () => owners().filter(o => !state.chars[o.viaChar]?.needsLogin);
+// One shared refresh time: when the owner whose ESI cache expires last is ready, refresh everyone together.
+const refreshAt = () => Math.max(0, ...activeOwners().map(nextUpdate));
 
 function fmtCountdown(ms) {
   const t = Math.max(0, Math.ceil(ms / 1000));
@@ -406,26 +408,13 @@ function fmtCountdown(ms) {
 }
 
 function updateTimers() {
-  const now = Date.now();
-  const list = owners();
-  for (const el of document.querySelectorAll('[data-countdown]')) {
-    const o = list.find(x => x.key === el.dataset.countdown);
-    if (!o) continue;
-    const left = nextUpdate(o) - now;
-    el.textContent = left > 0 ? `Next update in ${fmtCountdown(left)}` : 'Update available';
-    el.classList.toggle('ready', left <= 0);
-  }
   const btn = $('#refreshBtn');
+  const list = activeOwners();
   if (state.busy || !list.length) { btn.textContent = 'Refresh'; btn.disabled = true; return; }
-  const ready = readyOwners().length;
-  if (ready) {
-    btn.textContent = ready === list.length ? 'Refresh' : `Refresh (${ready} ready)`;
-    btn.disabled = false;
-  } else {
-    const soonest = Math.min(...list.filter(o => !state.chars[o.viaChar]?.needsLogin).map(nextUpdate));
-    btn.textContent = Number.isFinite(soonest) ? `Next refresh ${fmtCountdown(soonest - now)}` : 'Refresh';
-    btn.disabled = true;
-  }
+  const left = refreshAt() - Date.now();
+  btn.disabled = left > 0;
+  btn.textContent = left > 0 ? `Next refresh in ${fmtCountdown(left)}` : 'Refresh';
+  btn.title = left > 0 ? 'ESI is still serving cached asset data. Refresh unlocks when every owner has fresh data available.' : '';
 }
 
 const allTypeIds = () => Object.values(state.snapshots).flatMap(s => s.assets.map(a => a.type_id));
@@ -489,7 +478,6 @@ function renderOwners() {
     if (c?.needsLogin && o.kind === 'char') parts.push('<span class="warn">Login expired. Add again</span>');
     else if (err) parts.push(`<span class="warn" title="${esc(err)}">Last refresh failed, hover for detail</span>`);
     parts.push(snap ? `${formatNum(snap.assets.length)} items · updated ${timeAgo(snap.fetchedAt)}` : 'Not loaded yet');
-    if (snap) parts.push(`<span class="countdown" data-countdown="${o.key}"></span>`);
     const meta = parts.join('<br>');
     return `<div class="owner ${o.kind}">
       <label><input type="checkbox" data-owner="${o.key}" ${state.disabled[o.key] ? '' : 'checked'}>
@@ -616,7 +604,7 @@ function renderContent(rows) {
 // ---------------------------------------------------------------- events
 function bindUi() {
   $('#addBtn').addEventListener('click', login);
-  $('#refreshBtn').addEventListener('click', () => { const r = readyOwners(); if (r.length) refresh(r); });
+  $('#refreshBtn').addEventListener('click', () => { if (Date.now() >= refreshAt()) refresh(activeOwners()); });
   let t;
   $('#search').addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => { state.q = e.target.value.trim(); state.flatLimit = 500; render(); }, 200); });
   $('#locationFilter').addEventListener('change', e => { state.location = e.target.value; render(); });
@@ -701,8 +689,13 @@ async function init() {
   }
 
   setInterval(updateTimers, 1000);
-  const stale = readyOwners();
-  if (stale.length && configured()) refresh(stale);
+  if (configured()) {
+    if (Date.now() >= refreshAt()) refresh(activeOwners());
+    else {
+      const never = activeOwners().filter(o => !state.snapshots[o.key]);
+      if (never.length) refresh(never);
+    }
+  }
 }
 
 init();

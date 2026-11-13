@@ -9,7 +9,7 @@ Browser-only EVE Online asset tracker for your characters and corporations. It r
 - Values each stack at **Jita sell**, **Jita buy** (Fuzzwork market data) or **ESI average** prices. Blueprint copies count as 0.
 - Group by location, by item type, or flat. Search, location and division filters, sortable columns.
 - **Export CSV** of whatever is currently filtered.
-- Cached snapshots load instantly. Each owner shows a **countdown to the next ESI update**, read from ESI's own cache-expiry time (up to 1 hour for assets). **Refresh** only re-pulls owners whose data has expired, and counts down to the next one when none are ready. Expired owners refresh automatically when the page opens.
+- Cached snapshots load instantly. A single **refresh countdown** on the Refresh button tracks the owner whose ESI asset cache (up to 1 hour) expires last. When it reaches zero, Refresh pulls every character and corp together. If it has already expired when you open the page, everything refreshes automatically.
 - **Sort locations** by most ISK, least ISK, stack count or name. Each location shows its share of the total value.
 
 ## Setup
