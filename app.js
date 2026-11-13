@@ -4,7 +4,7 @@ import {
 } from './lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '1.0.0';   // bump on every release
+export const APP_VERSION = '1.1.0';   // bump on every release
 const CFG = window.EVEASSETS_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -470,25 +470,42 @@ function renderOwners() {
     $('#owners').innerHTML = '<p class="empty">No characters yet. Use <b>Add character</b> to log in with EVE Online.</p>';
     return;
   }
+  const values = ownerValues();
   $('#owners').innerHTML = list.map(o => {
     const snap = state.snapshots[o.key];
     const c = state.chars[o.viaChar];
     const img = o.kind === 'char' ? `${IMG}/characters/${o.id}/portrait?size=64` : `${IMG}/corporations/${o.id}/logo?size=64`;
     const err = state.errors[o.key];
-    const parts = [];
-    if (c?.needsLogin && o.kind === 'char') parts.push('<span class="warn">Login expired. Add again</span>');
-    else if (err) parts.push(`<span class="warn" title="${esc(err)}">Last refresh failed, hover for detail</span>`);
-    parts.push(snap ? `${formatNum(snap.assets.length)} items · updated ${timeAgo(snap.fetchedAt)}` : 'Not loaded yet');
-    const meta = parts.join('<br>');
-    return `<div class="owner ${o.kind}">
-      <label><input type="checkbox" data-owner="${o.key}" ${state.disabled[o.key] ? '' : 'checked'}>
+    const lines = [];
+    if (o.kind === 'corp') lines.push(`Corporation · via ${esc(c?.name)}`);
+    lines.push(snap ? `${formatNum(snap.assets.length)} items · ${timeAgo(snap.fetchedAt)}` : 'Not loaded yet');
+    if (c?.needsLogin && o.kind === 'char') lines.push('<span class="warn">Login expired. Add again</span>');
+    else if (err) lines.push(`<span class="warn" title="${esc(err)}">Refresh failed (hover)</span>`);
+    const isk = snap ? `${formatIsk(values[o.key] || 0)}` : '';
+    return `<div class="owner ${o.kind} ${state.disabled[o.key] ? 'off' : ''}">
+      <label>
+        <input type="checkbox" data-owner="${o.key}" ${state.disabled[o.key] ? '' : 'checked'}>
         <img src="${img}" alt="" loading="lazy">
-        <span><b>${esc(o.name)}</b><small>${o.kind === 'corp' ? `Corporation · via ${esc(c?.name)}<br>` : ''}${meta}</small></span>
+        <div class="info">
+          <div class="top"><b title="${esc(o.name)}">${esc(o.name)}</b><span class="isk" title="Estimated value of everything this ${o.kind === 'corp' ? 'corporation' : 'character'} owns">${isk}</span></div>
+          ${lines.map(l => `<small>${l}</small>`).join('')}
+        </div>
       </label>
-      ${o.kind === 'char' ? `<button class="icon" data-remove="${o.id}" title="Remove character">×</button>` : ''}
+      ${o.kind === 'char' ? `<button class="icon" data-remove="${o.id}" title="Remove character">×</button>` : '<span class="icon-space"></span>'}
     </div>`;
   }).join('');
   updateTimers();
+}
+
+// Total value per owner, counted even when the owner is unticked.
+function ownerValues() {
+  const out = {};
+  for (const [key, snap] of Object.entries(state.snapshots)) {
+    let sum = 0;
+    for (const a of snap.assets) if (a.type_id !== OFFICE_TYPE_ID) sum += unitPrice(a.type_id, !!a.is_blueprint_copy) * (a.quantity ?? 1);
+    out[key] = sum;
+  }
+  return out;
 }
 
 function renderStats(rows) {
