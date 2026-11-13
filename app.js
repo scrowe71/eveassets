@@ -4,7 +4,7 @@ import {
 } from './lib.js';
 
 // ---------------------------------------------------------------- config
-export const APP_VERSION = '1.1.0';   // bump on every release
+export const APP_VERSION = '1.2.0';   // bump on every release
 const CFG = window.EVEASSETS_CONFIG || {};
 const SSO = 'https://login.eveonline.com/v2/oauth';
 const ESI = 'https://esi.evetech.net';
@@ -59,6 +59,7 @@ const state = {
   priceMode: ls.get('ea.priceMode', 'jita_sell'),
   groupBy: ls.get('ea.groupBy', 'location'),
   locSort: ls.get('ea.locSort', 'value_desc'),
+  ownerSort: ls.get('ea.ownerSort', 'value_desc'),
   snapshots: {},                          // ownerKey -> snapshot
   errors: {},                             // ownerKey -> message
   busy: null,                             // status text while working
@@ -471,14 +472,21 @@ function renderOwners() {
     return;
   }
   const values = ownerValues();
-  $('#owners').innerHTML = list.map(o => {
+  const cmp = {
+    value_desc: (a, b) => (values[b.key] || 0) - (values[a.key] || 0),
+    value_asc: (a, b) => (values[a.key] || 0) - (values[b.key] || 0),
+    name_asc: (a, b) => a.name.localeCompare(b.name),
+  }[state.ownerSort] || ((a, b) => (values[b.key] || 0) - (values[a.key] || 0));
+  const chars = list.filter(o => o.kind === 'char').sort(cmp);
+  const corps = list.filter(o => o.kind === 'corp').sort(cmp);
+  const ownerHtml = o => {
     const snap = state.snapshots[o.key];
     const c = state.chars[o.viaChar];
     const img = o.kind === 'char' ? `${IMG}/characters/${o.id}/portrait?size=64` : `${IMG}/corporations/${o.id}/logo?size=64`;
     const err = state.errors[o.key];
     const lines = [];
     if (o.kind === 'corp') lines.push(`Corporation · via ${esc(c?.name)}`);
-    lines.push(snap ? `${formatNum(snap.assets.length)} items · ${timeAgo(snap.fetchedAt)}` : 'Not loaded yet');
+    lines.push(snap ? `${formatNum(snap.assets.length)} ${snap.assets.length === 1 ? 'item' : 'items'} · ${timeAgo(snap.fetchedAt)}` : 'Not loaded yet');
     if (c?.needsLogin && o.kind === 'char') lines.push('<span class="warn">Login expired. Add again</span>');
     else if (err) lines.push(`<span class="warn" title="${esc(err)}">Refresh failed (hover)</span>`);
     const isk = snap ? `${formatIsk(values[o.key] || 0)}` : '';
@@ -493,7 +501,10 @@ function renderOwners() {
       </label>
       ${o.kind === 'char' ? `<button class="icon" data-remove="${o.id}" title="Remove character">×</button>` : '<span class="icon-space"></span>'}
     </div>`;
-  }).join('');
+  };
+  $('#owners').innerHTML = `<h3>Characters</h3>${chars.map(ownerHtml).join('')}` +
+    (corps.length ? `<h3>Corporations</h3>${corps.map(ownerHtml).join('')}` : '');
+  $('#ownerSort').value = state.ownerSort;
   updateTimers();
 }
 
@@ -644,6 +655,7 @@ function bindUi() {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   });
 
+  $('#ownerSort').addEventListener('change', e => { state.ownerSort = e.target.value; ls.set('ea.ownerSort', state.ownerSort); renderOwners(); });
   $('#owners').addEventListener('change', e => {
     const key = e.target.dataset.owner;
     if (!key) return;

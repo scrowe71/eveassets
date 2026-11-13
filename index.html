@@ -29,7 +29,14 @@
 
   <div class="layout">
     <aside>
-      <h2>Owners</h2>
+      <div class="aside-head">
+        <h2>Owners</h2>
+        <select id="ownerSort" title="Sort owners">
+          <option value="value_desc">Most ISK first</option>
+          <option value="value_asc">Least ISK first</option>
+          <option value="name_asc">Name A–Z</option>
+        </select>
+      </div>
       <div id="owners"></div>
       <p class="hint">Corporation assets show up automatically for any logged-in character with the <b>Director</b> role.</p>
       <p class="hint">Logins and cached assets are stored only in this browser.</p>
