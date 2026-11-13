@@ -537,8 +537,7 @@ const th = (key, label, cls = '') => {
 };
 
 function itemCell(r) {
-  const icon = `${IMG}/types/${r.typeId}/${r.isBpc ? 'bpc' : 'icon'}?size=32`;
-  return `<td><div class="item"><img src="${icon}" alt="" loading="lazy"><span>${esc(r.name)}${r.isBpc ? ' <i class="tag">BPC</i>' : ''}${r.customName ? `<small>“${esc(r.customName)}”</small>` : ''}</span></div></td>`;
+  return `<td><div class="item"><span>${esc(r.name)}${r.isBpc ? ' <i class="tag">BPC</i>' : ''}${r.customName ? `<small>“${esc(r.customName)}”</small>` : ''}</span></div></td>`;
 }
 
 function rowHtml(r, showLoc) {
