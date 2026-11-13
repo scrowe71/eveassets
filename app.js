@@ -57,6 +57,7 @@ const state = {
   disabled: ls.get('ea.disabled', {}),    // ownerKey -> true when unticked
   priceMode: ls.get('ea.priceMode', 'jita_sell'),
   groupBy: ls.get('ea.groupBy', 'location'),
+  locSort: ls.get('ea.locSort', 'value_desc'),
   snapshots: {},                          // ownerKey -> snapshot
   errors: {},                             // ownerKey -> message
   busy: null,                             // status text while working
@@ -183,7 +184,7 @@ async function esi(path, { charId, method = 'GET', body, query } = {}) {
     if (charId) headers.Authorization = `Bearer ${await getToken(charId)}`;
     if (body) headers['Content-Type'] = 'application/json';
     const r = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
-    if (r.ok) return { data: await r.json(), pages: Number(r.headers.get('X-Pages')) || 1 };
+    if (r.ok) return { data: await r.json(), pages: Number(r.headers.get('X-Pages')) || 1, expires: Date.parse(r.headers.get('Expires')) || null };
 
     const wait = Number(r.headers.get('Retry-After') || r.headers.get('X-ESI-Error-Limit-Reset')) || 2 ** attempt;
     if (r.status === 420 || r.status === 429 || r.status >= 500) { await sleep(Math.min(wait, 60) * 1000); continue; }
@@ -207,7 +208,7 @@ async function esiPaged(path, opts) {
   const pages = {};
   await pool(rest, 4, async p => { pages[p] = (await esi(path, { ...opts, query: { page: p } })).data; });
   for (const p of rest) out.push(...pages[p]);
-  return out;
+  return { data: out, expires: first.expires };
 }
 
 async function resolveNames(ids) {
@@ -329,7 +330,7 @@ async function updateCharInfo(id) {
 
 async function fetchOwner(o) {
   const base = o.kind === 'char' ? `/characters/${o.id}` : `/corporations/${o.id}`;
-  const assets = await esiPaged(`${base}/assets`, { charId: o.viaChar });
+  const { data: assets, expires } = await esiPaged(`${base}/assets`, { charId: o.viaChar });
 
   const ids = new Set(assets.map(a => a.item_id));
   const parents = new Set(assets.filter(a => ids.has(a.location_id)).map(a => a.location_id));
@@ -356,7 +357,9 @@ async function fetchOwner(o) {
   await resolveNames([...assets.map(a => a.type_id), ...roots]);
   await resolveStructures(roots.filter(id => id >= 1e12), o.viaChar);
 
-  const snap = { ownerKey: o.key, ownerName: o.name, kind: o.kind, fetchedAt: Date.now(), assets, itemNames, divisions };
+  const now = Date.now();
+  const expiresAt = expires && expires > now ? expires : now + STALE_MS;
+  const snap = { ownerKey: o.key, ownerName: o.name, kind: o.kind, fetchedAt: now, expiresAt, assets, itemNames, divisions };
   state.snapshots[o.key] = snap;
   await idb.put(o.key, snap);
 }
@@ -384,6 +387,44 @@ async function refresh(list, { charInfo = true } = {}) {
   } finally {
     setBusy(null);
     rebuild();
+  }
+}
+
+// When ESI will hand out fresh data for this owner (asset data is cached up to 1 hour).
+const nextUpdate = o => {
+  const snap = state.snapshots[o.key];
+  if (!snap) return 0;
+  return snap.expiresAt || snap.fetchedAt + STALE_MS;
+};
+const readyOwners = () => owners().filter(o => !state.chars[o.viaChar]?.needsLogin && Date.now() >= nextUpdate(o));
+
+function fmtCountdown(ms) {
+  const t = Math.max(0, Math.ceil(ms / 1000));
+  const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), sec = t % 60;
+  const pad = n => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+
+function updateTimers() {
+  const now = Date.now();
+  const list = owners();
+  for (const el of document.querySelectorAll('[data-countdown]')) {
+    const o = list.find(x => x.key === el.dataset.countdown);
+    if (!o) continue;
+    const left = nextUpdate(o) - now;
+    el.textContent = left > 0 ? `Next update in ${fmtCountdown(left)}` : 'Update available';
+    el.classList.toggle('ready', left <= 0);
+  }
+  const btn = $('#refreshBtn');
+  if (state.busy || !list.length) { btn.textContent = 'Refresh'; btn.disabled = true; return; }
+  const ready = readyOwners().length;
+  if (ready) {
+    btn.textContent = ready === list.length ? 'Refresh' : `Refresh (${ready} ready)`;
+    btn.disabled = false;
+  } else {
+    const soonest = Math.min(...list.filter(o => !state.chars[o.viaChar]?.needsLogin).map(nextUpdate));
+    btn.textContent = Number.isFinite(soonest) ? `Next refresh ${fmtCountdown(soonest - now)}` : 'Refresh';
+    btn.disabled = true;
   }
 }
 
@@ -429,7 +470,7 @@ function render() {
 function renderStatus() {
   $('#status').textContent = state.busy || '';
   $('#status').classList.toggle('working', !!state.busy);
-  $('#refreshBtn').disabled = !!state.busy || !Object.keys(state.chars).length;
+  updateTimers();
   $('#setup').hidden = configured();
 }
 
@@ -444,9 +485,12 @@ function renderOwners() {
     const c = state.chars[o.viaChar];
     const img = o.kind === 'char' ? `${IMG}/characters/${o.id}/portrait?size=64` : `${IMG}/corporations/${o.id}/logo?size=64`;
     const err = state.errors[o.key];
-    const meta = c?.needsLogin && o.kind === 'char' ? '<span class="warn">Login expired. Add again</span>'
-      : err ? `<span class="warn" title="${esc(err)}">Error, hover for detail</span>`
-      : snap ? `${formatNum(snap.assets.length)} items · ${timeAgo(snap.fetchedAt)}` : 'Not loaded';
+    const parts = [];
+    if (c?.needsLogin && o.kind === 'char') parts.push('<span class="warn">Login expired. Add again</span>');
+    else if (err) parts.push(`<span class="warn" title="${esc(err)}">Last refresh failed, hover for detail</span>`);
+    parts.push(snap ? `${formatNum(snap.assets.length)} items · updated ${timeAgo(snap.fetchedAt)}` : 'Not loaded yet');
+    if (snap) parts.push(`<span class="countdown" data-countdown="${o.key}"></span>`);
+    const meta = parts.join('<br>');
     return `<div class="owner ${o.kind}">
       <label><input type="checkbox" data-owner="${o.key}" ${state.disabled[o.key] ? '' : 'checked'}>
         <img src="${img}" alt="" loading="lazy">
@@ -455,6 +499,7 @@ function renderOwners() {
       ${o.kind === 'char' ? `<button class="icon" data-remove="${o.id}" title="Remove character">×</button>` : ''}
     </div>`;
   }).join('');
+  updateTimers();
 }
 
 function renderStats(rows) {
@@ -481,6 +526,8 @@ function renderFilterOptions() {
     divs.map(d => `<option ${d === state.division ? 'selected' : ''}>${esc(d)}</option>`).join('');
   $('#divisionFilter').hidden = !divs.length;
   $('#groupBy').value = state.groupBy;
+  $('#locSort').value = state.locSort;
+  $('#locSortField').hidden = state.groupBy !== 'location';
   $('#priceMode').value = state.priceMode;
 }
 
@@ -508,6 +555,16 @@ function rowHtml(r, showLoc) {
 
 const head = showLoc => `<thead><tr>${th('name', 'Item')}${th('qty', 'Qty', 'num')}${showLoc ? th('location', 'Location') : ''}
   <th>Container / slot</th><th>Division</th>${th('owner', 'Owner')}${th('unit', 'Unit', 'num')}${th('value', 'Value', 'num')}</tr></thead>`;
+
+function sortGroups(groups) {
+  const by = {
+    value_desc: (a, b) => b.value - a.value,
+    value_asc: (a, b) => a.value - b.value,
+    stacks_desc: (a, b) => b.rows.length - a.rows.length,
+    name_asc: (a, b) => a.name.localeCompare(b.name),
+  }[state.locSort] || ((a, b) => b.value - a.value);
+  return [...groups].sort(by);
+}
 
 function renderContent(rows) {
   const el = $('#content');
@@ -538,7 +595,8 @@ function renderContent(rows) {
     return;
   }
 
-  const groups = groupByLocation(rows);
+  const total = rows.reduce((s, r) => s + r.value, 0);
+  const groups = sortGroups(groupByLocation(rows));
   const autoOpen = !!(state.q || state.location) || groups.length === 1;
   el.innerHTML = groups.map(g => {
     const open = autoOpen || state.expanded.has(g.id);
@@ -551,7 +609,7 @@ function renderContent(rows) {
     }
     return `<section class="group ${open ? 'open' : ''}">
       <button class="group-head" data-loc="${g.id}"><span class="caret">${open ? '▾' : '▸'}</span>
-        <span class="gname">${esc(g.name)}</span><span class="dim">${formatNum(g.rows.length)} ${g.rows.length === 1 ? 'stack' : 'stacks'}</span><b>${formatIsk(g.value)} ISK</b></button>
+        <span class="gname">${esc(g.name)}</span><span class="share" title="Share of the total value shown">${total ? `${(g.value / total * 100).toFixed(1)}%` : ''}</span><span class="dim">${formatNum(g.rows.length)} ${g.rows.length === 1 ? 'stack' : 'stacks'}</span><b>${formatIsk(g.value)} ISK</b></button>
       ${body}</section>`;
   }).join('');
 }
@@ -559,11 +617,12 @@ function renderContent(rows) {
 // ---------------------------------------------------------------- events
 function bindUi() {
   $('#addBtn').addEventListener('click', login);
-  $('#refreshBtn').addEventListener('click', () => refresh(owners()));
+  $('#refreshBtn').addEventListener('click', () => { const r = readyOwners(); if (r.length) refresh(r); });
   let t;
   $('#search').addEventListener('input', e => { clearTimeout(t); t = setTimeout(() => { state.q = e.target.value.trim(); state.flatLimit = 500; render(); }, 200); });
   $('#locationFilter').addEventListener('change', e => { state.location = e.target.value; render(); });
   $('#divisionFilter').addEventListener('change', e => { state.division = e.target.value; render(); });
+  $('#locSort').addEventListener('change', e => { state.locSort = e.target.value; ls.set('ea.locSort', state.locSort); render(); });
   $('#groupBy').addEventListener('change', e => { state.groupBy = e.target.value; ls.set('ea.groupBy', state.groupBy); state.flatLimit = 500; render(); });
   $('#priceMode').addEventListener('change', async e => {
     state.priceMode = e.target.value;
@@ -642,7 +701,8 @@ async function init() {
     }
   }
 
-  const stale = owners().filter(o => !state.chars[o.viaChar]?.needsLogin && (!state.snapshots[o.key] || Date.now() - state.snapshots[o.key].fetchedAt > STALE_MS));
+  setInterval(updateTimers, 1000);
+  const stale = readyOwners();
   if (stale.length && configured()) refresh(stale);
 }
 
